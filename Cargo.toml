@@ -21,7 +21,6 @@ gpui-kit = "0.7"
 anyhow = "1"
 arboard = "3"
 image = "0.25"
-directories = "5"
 async-channel = "2"
 
 [profile.release]

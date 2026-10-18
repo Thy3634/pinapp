@@ -15,7 +15,7 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, AppContext, Bounds, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    App, AppContext, Bounds, Context, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Size, Window, div, img, px,
 };
 use image::RgbaImage;
@@ -179,7 +179,7 @@ impl PinView {
 }
 
 impl Render for PinView {
-    fn render(&mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         // Keep the Wayland input region in sync (must run before paint).
         self.sync_input_region(window);
 
