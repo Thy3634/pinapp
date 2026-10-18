@@ -1,0 +1,29 @@
+[package]
+name = "pinapp"
+version = "0.1.0"
+edition = "2021"
+description = "Pin screenshots/clipboard images as always-on-top floating windows (Snipaste-like) for Wayland/niri."
+license = "MIT OR Apache-2.0"
+
+# ---------------------------------------------------------------------------
+# Dependency notes (verified against gpui-kit 0.7.0 / gpui-pre 0.3.7):
+#   * gpui-kit 0.7 bundles the GPUI engine. Its backends are selected by the
+#     bundled platform crate. There is NO `wayland` Cargo feature exposed by
+#     gpui-kit 0.7 itself, and the crate `gpui = "0.7"` does NOT exist on
+#     crates.io (the backend is the `gpui-pre` 0.3.7 fork). We therefore depend
+#     only on gpui-kit and rely on its bundled backend. If the binary fails to
+#     start under Wayland, rebuild with the platform crate's `wayland` feature
+#     enabled (e.g. `cargo build --features gpui-kit/...` after checking the
+#     actual feature name in `cargo tree -p gpui-kit`), or report upstream.
+# ---------------------------------------------------------------------------
+[dependencies]
+gpui-kit = "0.7"
+anyhow = "1"
+arboard = "3"
+image = "0.25"
+directories = "5"
+async-channel = "2"
+
+[profile.release]
+lto = true
+strip = true

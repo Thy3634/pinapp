@@ -1,92 +1,224 @@
 # pinapp
 
-> Snipaste 风格的「贴图」(pin / sticky-image)工具,面向 **danklinux(Dank Material Shell / niri,Wayland)**,基于 [gpui-kit](https://gpui-kit.com) 用 Rust 开发。
+> Pin the current clipboard image as an always-on-top, floating, transparent
+> window — a minimal, open-source [Snipaste](https://www.snipaste.com/)-like
+> tool for Linux **Wayland** (built and tested mentally against
+> **danklinux / niri**).
 
-`pinapp` 让你把截图「钉」在屏幕上:按下系统截图键截取画面后,再按一个热键,截图就会作为**始终置顶的悬浮窗**贴在桌面,方便对照、比对、做「半透明小抄」。
+You take a screenshot (on danklinux, `dms screenshot` copies the image to the
+clipboard by default), then press a key — a floating, transparent window appears
+with that image pinned on top of everything. Move it, scale it, rotate it,
+adjust its opacity, flip it, or make it click-through. Close it with `Esc`.
 
-## 工作流
+---
 
-```
-Print  ──►  dms screenshot(默认复制到剪贴板)  ──►  Pause  ──►  pinapp 读取剪贴板图片并钉到屏幕
-```
+## How it works
 
-- **Print**:danklinux 默认截图键,由 `dms screenshot` 接管,截图自动进剪贴板。
-- **Pause**:由 niri 键位绑定到 `pinapp --pin`,程序从剪贴板取图并开一个置顶悬浮窗。
+`pinapp` has two roles:
 
-## 特性
+1. **Daemon** (`pinapp` or `pinapp --serve`) — owns the GPUI application, listens
+   on a Unix socket (`$XDG_RUNTIME_DIR/pinapp.sock`), and opens a new floating
+   window whenever it receives a `pin` command.
+2. **Client** (`pinapp --pin` / `pinapp --quit`) — sends a one-line command to
+   the daemon over the socket. If the daemon isn't running, the client launches
+   `pinapp --serve` detached and retries, so a bare `pinapp --pin` from a key
+   binding "just works".
 
-- 贴图窗口:拖动移动、滚轮缩放、`Ctrl` + 滚轮调透明度
-- 旋转 / 翻转(`R` / `Shift+R` / `F` / `V`)
-- 鼠标穿透切换(`T`)——Wayland 下依赖合成器支持,见下方说明
-- 多张贴图并存,`Esc` 关闭当前贴图
-- 守护进程 + Unix Socket IPC,热键即时响应
+On `pin`, the daemon reads an image from the clipboard (via `arboard`, with a
+`wl-paste --type image/png` fallback) and opens a pin window for it.
 
-## 安装
+### Window / click-through design (important)
 
-### 从 Release 下载
+gpui-kit **0.7** does not expose a runtime window-move/resize API
+(`set_window_bounds` does not exist). To still support dragging, scaling,
+rotating, flipping and click-through **without moving the OS window**, each pin
+is implemented as a **transparent, borderless, screen-sized floating window**
+(`app-id = "pinapp"`, `WindowKind::Floating`,
+`WindowBackgroundAppearance::Transparent`). The image is drawn as an
+absolutely-positioned element centered in that window.
 
-到 [Releases](https://github.com/Thy3634/pinapp/releases) 下载对应架构的 `pinapp-<target>.tar.gz`,解压后将 `pinapp` 放到 `PATH` 中。
+Wayland click-through is done with `window.set_input_region`:
 
-### 从源码构建
+| Mode            | Input region                                  | Effect                                                        |
+| --------------- | --------------------------------------------- | ------------------------------------------------------------- |
+| Normal          | the image rectangle only                       | only the image catches the pointer; outside passes through     |
+| Click-through   | empty (`Some(&[])`)                            | the whole surface passes through, including the image         |
 
-```bash
-# 依赖(Ubuntu/Debian 示例)
-sudo apt install -y libclang-dev libgtk-3-dev libxkbcommon-dev \
-  libwayland-dev libfontconfig1-dev libfreetype6-dev pkg-config libssl-dev
+So dragging/scaling/etc. operate on the in-window image element; the surrounding
+transparent area never blocks the windows beneath it.
 
-# wl-clipboard(dms 已自带,用于剪贴板读取)
-sudo apt install -y wl-clipboard
+---
 
+## Requirements
+
+- A Wayland compositor (tested conceptually with **niri**).
+- **Rust** toolchain (edition 2021) to build.
+- Clipboard access:
+  - `arboard` (bundled dependency) for X11 / some Wayland setups, **and/or**
+  - [`wl-clipboard`](https://github.com/bugaevc/wl-clipboard) providing
+    `wl-paste` — required on a pure Wayland session where arboard cannot reach
+    the clipboard. `dms screenshot` (danklinux) populates this clipboard.
+- GPUI backend libs for your platform (XKB, Wayland client libs, etc.). If the
+  binary fails to start under Wayland, rebuild with the platform crate's
+  `wayland` feature enabled (check the exact feature name with
+  `cargo tree -p gpui-kit`).
+
+> **Dependency note:** `gpui-kit` 0.7 bundles the GPUI engine (the `gpui-pre`
+> 0.3.7 fork). There is **no** `gpui = "0.7"` crate on crates.io and gpui-kit
+> does **not** expose a `wayland` Cargo feature, so the project depends only on
+> `gpui-kit` (see `Cargo.toml`).
+
+---
+
+## Build
+
+```sh
 cargo build --release
-# 产物:target/release/pinapp
+# the binary is at target/release/pinapp
 ```
 
-## 配置(niri)
+(Compilation must be done on your machine — the sandbox used to author this
+project cannot compile Rust. Verify with `cargo build --release` and fix any
+API drift against your exact `gpui-kit` 0.7.x patch version.)
 
-把以下内容加入 `~/.config/niri/config.kdl`:
+---
+
+## niri configuration
+
+Add a **window rule** so pin windows float and a **key binding** for the Pause
+key. The exact KDL syntax varies by niri version — verify against your installed
+`niri` (e.g. `man niri` / `niri --help`) — but the intent is:
 
 ```kdl
-# 让贴图窗口以浮动方式打开(天然置顶于平铺窗口之上)
+// ~/.config/niri/config.kdl
+
+// Make pinapp float (it already opens as a transparent, screen-sized window).
 window-rule {
     match app-id="pinapp"
     open-floating true
 }
 
-# 把 Pause 绑到 pinapp --pin
+// Pause -> take a screenshot into the clipboard, then pin it.
+// (dms screenshot copies the image to the clipboard by default on danklinux.)
 binds {
-    Normal {
-        bind "Pause" { spawn "pinapp"; spawn-arg "--pin"; }
+    "Pause" {
+        spawn "sh"
+        spawn-arg "-c"
+        spawn-arg "dms screenshot && pinapp --pin"
     }
 }
 ```
 
-> niri 的键位语法请以你当前 niri 版本为准;若 `binds { Normal { ... } }` 不适用,可改用顶层 `bind "Pause" { spawn "pinapp"; spawn-arg "--pin"; }`。
+If your niri version spells multi-arg spawns differently, the equivalent is:
 
-## 开机自启
+```kdl
+binds {
+    "Pause" { spawn "pinapp" "--pin"; }
+}
+```
 
-把 `pinapp`(无参数 = 守护进程)加入 niri / systemd --user 自启,例如 niri 的 `spawn-at-startup "pinapp"`,或写一段 systemd --user service。
+…provided your screenshot tool already placed an image on the clipboard before
+the pin runs (bind the screenshot key separately, or chain it as shown above).
 
-## 用法
+> niri has no built-in "always on top across all workspaces" toggle; a floating
+> window floats above **tiled** windows in the current workspace. That is the
+> expected behavior here.
 
-1. 按 **Print** 截图(dms 默认)。
-2. 按 **Pause** 钉图。每按一次新增一张贴图。
-3. 快捷键:
+---
 
-| 按键 | 作用 |
-|---|---|
-| 拖动窗口 | 移动 |
-| 滚轮 | 缩放 |
-| `Ctrl` + 滚轮 | 调透明度 |
-| `R` / `Shift+R` | 顺时针 / 逆时针旋转 90° |
-| `F` / `V` | 水平 / 垂直翻转 |
-| `T` | 切换鼠标穿透 |
-| `Esc` | 关闭当前贴图 |
+## Autostart (optional)
 
-## 已知限制
+Let the daemon start with your session so the first `pinapp --pin` is instant.
+Pick one:
 
-- **鼠标穿透**:Wayland / niri 普通应用没有标准的「输入穿透」API。开启 `T` 后程序会尽量不抢焦点,但真正点击穿透到下层窗口需要合成器层面支持;如遇不生效,可结合 niri 的窗口规则处理。
-- 本程序面向 niri / Wayland;其它合成器需自行验证。
+- **niri autostart** (if your niri supports it):
+  ```kdl
+  autostart {
+      "pinapp" "pinapp" "--serve"
+  }
+  ```
+- **systemd --user** drop-in `~/.config/systemd/user/pinapp.service`:
+  ```ini
+  [Unit]
+  Description=pinapp clipboard-pin daemon
 
-## 许可证
+  [Service]
+  ExecStart=%h/.cargo/bin/pinapp --serve
+  Restart=on-failure
 
-[MIT](LICENSE)
+  [Install]
+  WantedBy=default.target
+  ```
+  then `systemctl --user enable --now pinapp`.
+
+The client's auto-launch fallback means autostart is convenience, not a hard
+requirement.
+
+---
+
+## Usage & interaction reference
+
+1. Take a screenshot (e.g. `dms screenshot`) so an image is on the clipboard.
+2. Press the bound key (Pause) → `pinapp --pin` → a floating image appears.
+3. Interact with it:
+
+| Action                       | Input                                   |
+| ---------------------------- | --------------------------------------- |
+| Move                         | Left-click drag                         |
+| Scale up / down              | Mouse wheel up / down                   |
+| Opacity up / down            | **Ctrl** + wheel up / down              |
+| Rotate clockwise             | `R`                                     |
+| Rotate counter-clockwise     | `Shift` + `R`                           |
+| Flip horizontally            | `F`                                     |
+| Flip vertically              | `V`                                     |
+| Toggle click-through         | `T`                                     |
+| Close                        | `Esc`                                   |
+
+Open as many pins as you like; each is its own window. `pinapp --quit` stops the
+daemon (closes everything).
+
+---
+
+## Known limitations & risks
+
+- **Build/API drift:** written against gpui-kit 0.7.0 / gpui-pre 0.3.7 API docs.
+  It has **not** been compiled in the authoring sandbox — run
+  `cargo build --release` and reconcile any signature differences for your exact
+  patch version (notably `cx.new` vs `cx.new_view` and `Application::run`'s
+  return type, both handled defensively in the code).
+- **`WindowDecorations` has no `Borderless` variant** in gpui-kit 0.7; borderless
+  is achieved with `window_decorations: None` (no server/client decorations).
+- **No runtime window move/resize:** hence the full-screen transparent-window +
+  input-region approach described above (intentional, documented design).
+- **True "always on top":** depends on the compositor; niri floats it above
+  tiled windows in the current workspace only.
+- **Daemon lifetime:** gpui typically quits the app when the last window closes.
+  If you close every pin, the daemon may exit; the next `pinapp --pin`
+  auto-relaunches it. A pending IPC task also helps keep it alive while pins
+  exist. If you need a strict always-alive daemon, add an off-screen keep-alive
+  window or a systemd service (see Autostart).
+- **Keyboard focus:** key bindings assume the pin window/view is focused (the
+  default for a freshly opened window). If keys don't respond, click the image
+  once to focus it.
+- **`set_input_region` during `render`:** applied idempotently each paint (like
+  `set_cursor_style`); if a future gpui-kit disallows window mutation in `render`,
+  move the call into an `on_next_frame`/window-event hook.
+- **Clipboard on pure Wayland:** relies on `wl-paste` (wl-clipboard) when arboard
+  can't reach the clipboard.
+
+---
+
+## File layout
+
+```
+pinapp/
+├── Cargo.toml            # package + dependencies (gpui-kit 0.7, arboard, image, ...)
+├── README.md             # this file
+└── src/
+    ├── main.rs           # argument parsing / dispatch
+    ├── daemon.rs         # GPUI app, Unix-socket server, window options
+    ├── ipc.rs            # client: send pin/quit over the socket (+ auto-launch)
+    ├── clipboard.rs      # clipboard image read (arboard + wl-paste fallback)
+    ├── pin_view.rs       # PinView: render + interactions + click-through
+    └── image_util.rs     # cache dir, PNG (re)encode, rotate/flip/opacity
+```
