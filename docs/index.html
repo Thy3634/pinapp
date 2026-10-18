@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pinapp · 贴图工具</title>
+  <meta name="description" content="Snipaste 风格的贴图工具,面向 danklinux(niri/Wayland),基于 gpui-kit。Print 截图,Pause 钉图。" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="container">
+      <h1>pinapp</h1>
+      <p>把截图「钉」在屏幕上 —— Snipaste 风格的贴图工具</p>
+      <p>面向 <strong>danklinux (Dank Material Shell / niri, Wayland)</strong>,基于 gpui-kit</p>
+      <div class="badges">
+        <span class="badge">Rust · gpui-kit</span>
+        <span class="badge">Wayland / niri</span>
+        <span class="badge">MIT 开源</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="toc">
+    <div class="container">
+      <a href="#intro">介绍</a>
+      <a href="#features">特性</a>
+      <a href="#install">安装</a>
+      <a href="#quickstart">快速开始</a>
+      <a href="#shortcuts">快捷键</a>
+      <a href="#niri">niri 配置</a>
+      <a href="#faq">常见问题</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section id="intro">
+      <h2>介绍</h2>
+      <p>
+        <strong>pinapp</strong> 让你把截图「钉」在屏幕上:按下系统截图键截取画面后,再按一个热键,
+        截图就会作为<strong>始终置顶的悬浮窗</strong>贴在桌面,方便对照代码、比对设计稿、做「半透明小抄」。
+      </p>
+      <div class="flow">
+        <span class="step">Print 截图</span>
+        <span class="arrow">→</span>
+        <span class="step">dms screenshot(进剪贴板)</span>
+        <span class="arrow">→</span>
+        <span class="step">Pause 钉图</span>
+        <span class="arrow">→</span>
+        <span class="step">置顶悬浮窗</span>
+      </div>
+      <p>
+        <a href="https://github.com/Thy3634/pinapp">GitHub 仓库</a> ·
+        <a href="https://github.com/Thy3634/pinapp/releases">下载 Release</a>
+      </p>
+    </section>
+
+    <section id="features">
+      <h2>特性</h2>
+      <div class="cards">
+        <div class="card"><h3>置顶贴图</h3><p>浮动窗口天然置于平铺窗口之上,多张并存。</p></div>
+        <div class="card"><h3>自由操控</h3><p>拖动移动、滚轮缩放、Ctrl+滚轮调透明度。</p></div>
+        <div class="card"><h3>旋转翻转</h3><p>90° 旋转、水平/垂直翻转随心切换。</p></div>
+        <div class="card"><h3>鼠标穿透</h3><p>一键切换点击穿透(受合成器支持限制)。</p></div>
+      </div>
+    </section>
+
+    <section id="install">
+      <h2>安装</h2>
+      <h3>从 Release 下载</h3>
+      <p>到 <a href="https://github.com/Thy3634/pinapp/releases">Releases</a> 下载对应架构的
+        <code>pinapp-&lt;target&gt;.tar.gz</code>,解压后将 <code>pinapp</code> 放到 <code>PATH</code> 中。</p>
+      <h3>从源码构建</h3>
+      <pre><code># 依赖(Ubuntu / Debian 示例)
+sudo apt install -y libclang-dev libgtk-3-dev libxkbcommon-dev \
+  libwayland-dev libfontconfig1-dev libfreetype6-dev pkg-config libssl-dev
+# wl-clipboard(dms 已自带,用于剪贴板读取)
+sudo apt install -y wl-clipboard
+
+cargo build --release
+# 产物:target/release/pinapp</code></pre>
+    </section>
+
+    <section id="quickstart">
+      <h2>快速开始</h2>
+      <ol>
+        <li>按 <kbd>Print</kbd> 截图(dms 默认,截图自动进剪贴板)。</li>
+        <li>按 <kbd>Pause</kbd> 钉图。每按一次新增一张贴图。</li>
+        <li>拖动、缩放、调透明度,或按 <kbd>Esc</kbd> 关闭当前贴图。</li>
+      </ol>
+      <div class="note">提示:需在 niri 中把 <code>Pause</code> 绑到 <code>pinapp --pin</code>,并让 pinapp 随会话自启(守护进程)。详见下方配置。</div>
+    </section>
+
+    <section id="shortcuts">
+      <h2>快捷键</h2>
+      <table class="kbd">
+        <thead><tr><th>按键</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td>拖动窗口</td><td>移动</td></tr>
+          <tr><td>滚轮</td><td>缩放</td></tr>
+          <tr><td><kbd>Ctrl</kbd> + 滚轮</td><td>调透明度</td></tr>
+          <tr><td><kbd>R</kbd> / <kbd>Shift+R</kbd></td><td>顺时针 / 逆时针旋转 90°</td></tr>
+          <tr><td><kbd>F</kbd> / <kbd>V</kbd></td><td>水平 / 垂直翻转</td></tr>
+          <tr><td><kbd>T</kbd></td><td>切换鼠标穿透</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>关闭当前贴图</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="niri">
+      <h2>niri 配置</h2>
+      <p>把以下内容加入 <code>~/.config/niri/config.kdl</code>:</p>
+      <pre><code># 让贴图窗口以浮动方式打开(天然置顶于平铺窗口之上)
+window-rule {
+    match app-id="pinapp"
+    open-floating true
+}
+
+# 把 Pause 绑到 pinapp --pin
+binds {
+    Normal {
+        bind "Pause" { spawn "pinapp"; spawn-arg "--pin"; }
+    }
+}</code></pre>
+      <p>开机自启:把 <code>pinapp</code>(无参数 = 守护进程)加入 niri 的 <code>spawn-at-startup</code> 或 systemd --user。</p>
+      <div class="note">niri 的键位语法请以你当前 niri 版本为准;若 <code>binds { Normal { ... } }</code> 不适用,可改用顶层 <code>bind "Pause" { spawn "pinapp"; spawn-arg "--pin"; }</code>。</div>
+    </section>
+
+    <section id="faq">
+      <h2>常见问题</h2>
+      <h3>鼠标穿透为什么不生效?</h3>
+      <p>Wayland / niri 普通应用没有标准的「输入穿透」API。开启 <code>T</code> 后程序会尽量不抢焦点,但真正点击穿透到下层窗口需要合成器层面支持;如遇不生效,可结合 niri 的窗口规则处理。</p>
+      <h3>支持其它合成器吗?</h3>
+      <p>本程序面向 niri / Wayland 设计;其它 Wayland 合成器需自行验证窗口置顶与键位绑定。</p>
+      <h3>截图从哪来?</h3>
+      <p>由 danklinux 默认的 <code>dms screenshot</code> 提供,默认复制到剪贴板;pinapp 通过剪贴板读取图片。</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>pinapp · MIT License · 基于 gpui-kit 构建</p>
+  </footer>
+</body>
+</html>
