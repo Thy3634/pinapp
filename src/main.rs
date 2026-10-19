@@ -13,6 +13,7 @@ mod clipboard;
 mod daemon;
 mod image_util;
 mod ipc;
+mod pinned_image;
 mod pin_view;
 
 use anyhow::Result;

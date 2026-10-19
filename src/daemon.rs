@@ -2,11 +2,16 @@
 //! windows on demand.
 //!
 //! Architecture:
-//!   * a dedicated OS thread accepts Unix-socket connections and forwards each
-//!     received text line into an [`async_channel`] [`Receiver`];
+//!   * a dedicated OS thread accepts Unix-socket connections, reads a single
+//!     command line, and forwards `(command, reply_sender)` into an
+//!     [`async_channel`] [`Receiver`];
 //!   * the GPUI app spawns a background task that `recv`s those commands and,
 //!     on the main thread, reads the clipboard and opens pin windows (GPUI
-//!     windows may only be created from the main thread / an `update` call).
+//!     windows may only be created from the main thread / an `update` call);
+//!   * after processing a command, the main thread sends the outcome string
+//!     ("ok" or "err:<message>") back through the reply channel; the listener
+//!     thread writes it to the client as an acknowledgement, giving the user
+//!     feedback when e.g. the clipboard holds no image.
 
 use anyhow::Result;
 use async_channel::unbounded;
@@ -14,8 +19,10 @@ use gpui_kit::{
     App, AppContext, Bounds, PlatformDisplay, Point, Pixels, Size, TitlebarOptions,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
+use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use crate::clipboard;
 use crate::ipc;
@@ -23,9 +30,10 @@ use crate::pin_view::PinView;
 
 /// Run the persistent daemon. Blocks until the application quits.
 pub fn run_daemon() -> Result<()> {
-    let (tx, rx) = unbounded::<String>();
+    let (tx, rx) = unbounded::<(String, mpsc::Sender<String>)>();
 
-    // OS thread that accepts IPC connections and forwards commands.
+    // OS thread that accepts IPC connections and forwards commands + reply
+    // channels.
     start_socket_listener(tx)?;
 
     let _ = gpui_kit::application().run(move |cx| {
@@ -35,24 +43,36 @@ pub fn run_daemon() -> Result<()> {
         // open GPUI windows safely.
         let rx = rx;
         cx.spawn(|mut async_cx| async move {
-            while let Ok(cmd) = rx.recv().await {
+            while let Ok((cmd, reply)) = rx.recv().await {
                 match cmd.as_str() {
                     "pin" => match clipboard::read_clipboard_image() {
                         Ok(img) => {
-                            let _ = async_cx.update(|cx| {
+                            let opened = async_cx.update(|cx| {
                                 let opts = build_window_options(cx);
                                 let _ = gpui_kit::open_window(opts, cx, |_, cx| {
                                     cx.new(|cx| PinView::new(img, cx))
                                 });
                             });
+                            let ack = match opened {
+                                Ok(_) => "ok".to_string(),
+                                Err(e) => format!("err:{e}"),
+                            };
+                            let _ = reply.send(ack);
                         }
-                        Err(e) => eprintln!("pinapp: failed to read clipboard: {e}"),
+                        Err(e) => {
+                            eprintln!("pinapp: failed to read clipboard: {e}");
+                            let _ = reply.send(format!("err:{e}"));
+                        }
                     },
                     "quit" => {
+                        let _ = reply.send("ok".to_string());
                         let _ = async_cx.update(|cx| cx.quit());
                         break;
                     }
-                    other => eprintln!("pinapp: unknown command `{other}`"),
+                    other => {
+                        eprintln!("pinapp: unknown command `{other}`");
+                        let _ = reply.send(format!("err:unknown-command:{other}"));
+                    }
                 }
             }
         })
@@ -62,10 +82,13 @@ pub fn run_daemon() -> Result<()> {
     Ok(())
 }
 
-/// Bind the Unix socket and spawn a thread that forwards each received line as a
-/// command. A stale socket file is removed first so a crash doesn't block
-/// restart.
-fn start_socket_listener(tx: async_channel::Sender<String>) -> Result<()> {
+/// Bind the Unix socket and spawn a thread that forwards each received command
+/// line as `(command, reply_sender)`. A stale socket file is removed first so a
+/// crash doesn't block restart. After forwarding, the thread blocks on the
+/// reply channel and writes the outcome back to the client as an ack.
+fn start_socket_listener(
+    tx: async_channel::Sender<(String, mpsc::Sender<String>)>,
+) -> Result<()> {
     let path = ipc::socket_path();
     // Remove a stale socket left by a previous run.
     let _ = std::fs::remove_file(&path);
@@ -78,19 +101,45 @@ fn start_socket_listener(tx: async_channel::Sender<String>) -> Result<()> {
                 Ok(s) => s,
                 Err(_) => break,
             };
-            let mut buf = String::new();
-            use std::io::Read;
-            if stream.read_to_string(&mut buf).is_ok() {
-                for line in buf.lines() {
-                    let line = line.trim().to_string();
-                    if !line.is_empty() {
-                        if tx.send(line).is_err() {
-                            // Receiver is gone (daemon shutting down).
-                            return;
+
+            // Read a single command line (until '\n' or EOF). We must NOT read
+            // until EOF, otherwise we'd block until the client closes and could
+            // never send an acknowledgement back.
+            let mut line = String::new();
+            let mut buf = [0u8; 256];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        let chunk = &buf[..n];
+                        if let Some(pos) = chunk.iter().position(|&b| b == b'\n') {
+                            line.push_str(&String::from_utf8_lossy(&chunk[..pos]));
+                            break;
+                        } else {
+                            line.push_str(&String::from_utf8_lossy(chunk));
                         }
                     }
+                    Err(_) => break,
                 }
             }
+            let line = line.trim().to_string();
+            if line.is_empty() {
+                continue;
+            }
+
+            // Forward the command together with a one-shot reply channel.
+            let (reply_tx, reply_rx) = mpsc::channel();
+            if tx.send((line, reply_tx)).is_err() {
+                return; // daemon shutting down
+            }
+
+            // Wait for the main thread to process the command, then write the
+            // outcome back as the acknowledgement and close the connection.
+            let ack = reply_rx
+                .recv()
+                .unwrap_or_else(|_| "err:daemon-shutdown".to_string());
+            let _ = stream.write_all(format!("{ack}\n").as_bytes());
+            let _ = stream.flush();
         }
     });
     Ok(())

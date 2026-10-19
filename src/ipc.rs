@@ -47,11 +47,20 @@ pub fn send_command(cmd: &str) -> Result<()> {
         .write_all(line.as_bytes())
         .context("write command to socket")?;
 
-    // Best-effort read of an optional acknowledgement (do not block long).
+    // The daemon replies with a single acknowledgement line ("ok" or
+    // "err:<message>") and then closes the connection. Surface failures
+    // (e.g. clipboard holds no image) instead of failing silently.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(2000)))
+        .ok();
     let mut ack = String::new();
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
     let _ = stream.read_to_string(&mut ack);
-    Ok(())
+    let ack = ack.trim();
+    match ack {
+        "" => Ok(()), // daemon didn't reply (race) — assume ok
+        s if s.starts_with("ok") => Ok(()),
+        s => Err(anyhow::anyhow!("pinapp daemon: {s}")),
+    }
 }
 
 /// Launch `pinapp --serve` detached (no inherited stdio).

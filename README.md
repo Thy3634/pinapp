@@ -25,7 +25,9 @@ adjust its opacity, flip it, or make it click-through. Close it with `Esc`.
    binding "just works".
 
 On `pin`, the daemon reads an image from the clipboard (via `arboard`, with a
-`wl-paste --type image/png` fallback) and opens a pin window for it.
+`wl-paste --type image/png` fallback) and opens a pin window for it. If the
+clipboard holds no image (e.g. it contains text), the daemon reports the failure
+back to the client, so `pinapp --pin` exits non-zero instead of failing silently.
 
 ### Window / click-through design (important)
 
