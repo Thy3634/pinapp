@@ -78,8 +78,10 @@ cargo build --release
 ```
 
 (Compilation must be done on your machine — the sandbox used to author this
-project cannot compile Rust. Verify with `cargo build --release` and fix any
-API drift against your exact `gpui-kit` 0.7.x patch version.)
+project cannot compile Rust. Every gpui-kit API used here has been verified
+against the exact versions a fresh `cargo build` resolves: `gpui-kit` **0.7.3**
+→ engine `gpui-pre` **0.3.9** (Wayland + X11 backends on by default). Still
+run `cargo build --release` on your machine — it is the real compile gate.)
 
 ---
 
@@ -100,20 +102,26 @@ window-rule {
 
 // Pause -> take a screenshot into the clipboard, then pin it.
 // (dms screenshot copies the image to the clipboard by default on danklinux.)
+// Every spawn argument goes in its own quotes.
 binds {
-    "Pause" {
-        spawn "sh"
-        spawn-arg "-c"
-        spawn-arg "dms screenshot && pinapp --pin"
-    }
+    Pause { spawn "sh" "-c" "dms screenshot && pinapp --pin"; }
 }
 ```
 
-If your niri version spells multi-arg spawns differently, the equivalent is:
+On niri >= 25.08 you can use the shell helper instead:
 
 ```kdl
 binds {
-    "Pause" { spawn "pinapp" "--pin"; }
+    Pause { spawn-sh "dms screenshot && pinapp --pin"; }
+}
+```
+
+If you prefer to keep **Print** for the screenshot and **Pause** only for
+pinning (the daemon reads whatever image is already on the clipboard):
+
+```kdl
+binds {
+    Pause { spawn "pinapp" "--pin"; }
 }
 ```
 

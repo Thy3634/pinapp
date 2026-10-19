@@ -116,20 +116,18 @@ window-rule {
     open-floating true
 }
 
-# 把 Pause 绑到 pinapp --pin
+# 把 Pause 绑到 pinapp --pin(每个 spawn 参数独立加引号)
 binds {
-    Normal {
-        bind "Pause" { spawn "pinapp"; spawn-arg "--pin"; }
-    }
+    Pause { spawn "pinapp" "--pin"; }
 }</code></pre>
       <p>开机自启:把 <code>pinapp</code>(无参数 = 守护进程)加入 niri 的 <code>spawn-at-startup</code> 或 systemd --user。</p>
-      <div class="note">niri 的键位语法请以你当前 niri 版本为准;若 <code>binds { Normal { ... } }</code> 不适用,可改用顶层 <code>bind "Pause" { spawn "pinapp"; spawn-arg "--pin"; }</code>。</div>
+      <div class="note">niri 的键位语法请以你当前 niri 版本为准。若想在截图后自动贴图,可用 <code>Pause { spawn "sh" "-c" "dms screenshot &amp;&amp; pinapp --pin"; }</code>(niri ≥ 25.08 亦可写 <code>spawn-sh "dms screenshot &amp;&amp; pinapp --pin"</code>)。</div>
     </section>
 
     <section id="faq">
       <h2>常见问题</h2>
       <h3>鼠标穿透为什么不生效?</h3>
-      <p>Wayland / niri 普通应用没有标准的「输入穿透」API。开启 <code>T</code> 后程序会尽量不抢焦点,但真正点击穿透到下层窗口需要合成器层面支持;如遇不生效,可结合 niri 的窗口规则处理。</p>
+      <p>穿透通过 Wayland 的输入区域(input region)实现:常态下只有图片矩形接收指针事件,按 <kbd>T</kbd> 后整个表面都设为空输入区,点击会穿透到下层窗口。若无效,请确认会话是真正的 Wayland 会话(<code>echo $WAYLAND_DISPLAY</code> 有值),而非 XWayland。</p>
       <h3>支持其它合成器吗?</h3>
       <p>本程序面向 niri / Wayland 设计;其它 Wayland 合成器需自行验证窗口置顶与键位绑定。</p>
       <h3>截图从哪来?</h3>
