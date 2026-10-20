@@ -21,12 +21,11 @@
 use anyhow::Result;
 use async_channel::unbounded;
 use gpui_kit::{
-    App, AppContext, Bounds, PlatformDisplay, Point, Pixels, Size, TitlebarOptions,
-    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions,
+    App, AsyncApp, Bounds, Point, Pixels, Size, TitlebarOptions, WindowBackgroundAppearance,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, px,
 };
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -52,7 +51,7 @@ pub fn run_daemon() -> Result<()> {
         let canvas = canvas.clone();
         // Background task: process IPC commands on the main thread so we can
         // create windows and touch entities safely.
-        cx.spawn(|mut async_cx| async move {
+        cx.spawn(|mut async_cx: &mut AsyncApp| async move {
             while let Ok((cmd, reply)) = rx.recv().await {
                 match cmd.as_str() {
                     "pin" => match clipboard::read_clipboard_image() {
@@ -174,7 +173,7 @@ fn start_socket_listener(
 
             // Forward the command together with a one-shot reply channel.
             let (reply_tx, reply_rx) = mpsc::channel();
-            if tx.send((line, reply_tx)).is_err() {
+            if tx.try_send((line, reply_tx)).is_err() {
                 return; // daemon shutting down
             }
 

@@ -107,11 +107,11 @@ impl PinCanvas {
     ///
     /// Returns the id of the newly added pin.
     pub fn add_pin(&mut self, img: RgbaImage, screen: Bounds<Pixels>) -> u64 {
-        let image = PinnedImage::new(img, screen.size.width.0, screen.size.height.0);
+        let image = PinnedImage::new(img, screen.size.width.as_f32(), screen.size.height.as_f32());
         let (w, h) = image.display_size();
         let pos = point(
-            px((screen.size.width.0 - w) / 2.0),
-            px((screen.size.height.0 - h) / 2.0),
+            px((screen.size.width.as_f32() - w) / 2.0),
+            px((screen.size.height.as_f32() - h) / 2.0),
         );
         let id = self.next_id;
         self.next_id += 1;
@@ -238,10 +238,10 @@ impl Render for PinCanvas {
                 .on_mouse_move(cx.listener(move |this: &mut Self, e: &MouseMoveEvent, _window, cx| {
                     if let Some(pin) = this.pins.iter_mut().find(|p| p.id == id) {
                         if pin.dragging {
-                            let dx = e.position.x - pin.drag_last.x;
-                            let dy = e.position.y - pin.drag_last.y;
-                            pin.pos.x += dx;
-                            pin.pos.y += dy;
+                            let dx = e.position.x.as_f32() - pin.drag_last.x.as_f32();
+                            let dy = e.position.y.as_f32() - pin.drag_last.y.as_f32();
+                            pin.pos.x = px(pin.pos.x.as_f32() + dx);
+                            pin.pos.y = px(pin.pos.y.as_f32() + dy);
                             pin.drag_last = e.position;
                             cx.notify();
                         }
@@ -251,7 +251,7 @@ impl Render for PinCanvas {
                 // act on the focused pin.
                 .on_scroll_wheel(cx.listener(move |this: &mut Self, e: &ScrollWheelEvent, _window, cx| {
                     let delta = match &e.delta {
-                        ScrollDelta::Pixels(p) => p.y.0,
+                        ScrollDelta::Pixels(p) => p.y.as_f32(),
                         ScrollDelta::Lines(l) => l.y * 20.0,
                     };
                     if e.modifiers.secondary() {
