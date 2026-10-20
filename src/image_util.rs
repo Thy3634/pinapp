@@ -1,5 +1,5 @@
 //! Image utilities: cache directory management, (re)encoding to PNG, and the
-//! pixel transforms used by [`crate::pin_view::PinView`] (rotate / flip /
+//! pixel transforms used by [`crate::canvas::PinCanvas`] (rotate / flip /
 //! opacity).
 
 use anyhow::{Context, Result};

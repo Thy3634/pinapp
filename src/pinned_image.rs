@@ -5,7 +5,7 @@
 //! unit-testable domain model — per the DDD red line that the domain layer must
 //! not depend on the presentation framework.
 //!
-//! The presentation layer ([`crate::pin_view`]) owns window position, drag
+//! The presentation layer ([`crate::canvas`]) owns window position, drag
 //! state and the Wayland input region; it delegates all image transforms to
 //! this model.
 

@@ -9,12 +9,12 @@
 //! runs `pinapp --pin`, which sends a command over a Unix socket; the daemon
 //! reads the clipboard and opens a new floating window for the image.
 
+mod canvas;
 mod clipboard;
 mod daemon;
 mod image_util;
 mod ipc;
 mod pinned_image;
-mod pin_view;
 
 use anyhow::Result;
 

@@ -1,32 +1,38 @@
-//! Daemon: owns the GPUI application, serves IPC commands, and opens pin
-//! windows on demand.
+//! Daemon: owns the GPUI application, serves IPC commands, and hosts the single
+//! pin canvas.
 //!
 //! Architecture:
 //!   * a dedicated OS thread accepts Unix-socket connections, reads a single
 //!     command line, and forwards `(command, reply_sender)` into an
 //!     [`async_channel`] [`Receiver`];
 //!   * the GPUI app spawns a background task that `recv`s those commands and,
-//!     on the main thread, reads the clipboard and opens pin windows (GPUI
-//!     windows may only be created from the main thread / an `update` call);
+//!     on the main thread, reads the clipboard and adds the image to the single
+//!     canvas window (GPUI windows may only be created from the main thread via
+//!     an `update` call);
 //!   * after processing a command, the main thread sends the outcome string
 //!     ("ok" or "err:<message>") back through the reply channel; the listener
-//!     thread writes it to the client as an acknowledgement, giving the user
-//!     feedback when e.g. the clipboard holds no image.
+//!     thread writes it to the client as an acknowledgement.
+//!
+//! The canvas is held as a [`WindowHandle`](gpui_kit::WindowHandle) behind an
+//! `Arc<Mutex<..>>` so it can be created once and reused for every subsequent
+//! `pin`. The handle (unlike a bare `Entity`) lets us detect that the window was
+//! closed underneath us via a `Result`, instead of panicking on a stale view.
 
 use anyhow::Result;
 use async_channel::unbounded;
 use gpui_kit::{
     App, AppContext, Bounds, PlatformDisplay, Point, Pixels, Size, TitlebarOptions,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions,
 };
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
+use crate::canvas::PinCanvas;
 use crate::clipboard;
 use crate::ipc;
-use crate::pin_view::PinView;
 
 /// Run the persistent daemon. Blocks until the application quits.
 pub fn run_daemon() -> Result<()> {
@@ -36,27 +42,22 @@ pub fn run_daemon() -> Result<()> {
     // channels.
     start_socket_listener(tx)?;
 
+    // The one canvas window that hosts every pinned image. Shared across
+    // commands; only ever touched from the GPUI main thread.
+    let canvas: Arc<Mutex<Option<WindowHandle<PinCanvas>>>> = Arc::new(Mutex::new(None));
+
     let _ = gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
 
+        let canvas = canvas.clone();
         // Background task: process IPC commands on the main thread so we can
-        // open GPUI windows safely.
-        let rx = rx;
+        // create windows and touch entities safely.
         cx.spawn(|mut async_cx| async move {
             while let Ok((cmd, reply)) = rx.recv().await {
                 match cmd.as_str() {
                     "pin" => match clipboard::read_clipboard_image() {
                         Ok(img) => {
-                            let opened = async_cx.update(|cx| {
-                                let opts = build_window_options(cx);
-                                let _ = gpui_kit::open_window(opts, cx, |_, cx| {
-                                    cx.new(|cx| PinView::new(img, cx))
-                                });
-                            });
-                            let ack = match opened {
-                                Ok(_) => "ok".to_string(),
-                                Err(e) => format!("err:{e}"),
-                            };
+                            let ack = async_cx.update(|cx| add_pin_to_canvas(&canvas, img, cx));
                             let _ = reply.send(ack);
                         }
                         Err(e) => {
@@ -80,6 +81,50 @@ pub fn run_daemon() -> Result<()> {
     });
 
     Ok(())
+}
+
+/// Add `img` to the shared canvas window, creating the window on first use (or
+/// recreating it if it was closed).
+///
+/// Returns the acknowledgement string to send back to the client. Must be
+/// called on the GPUI main thread (i.e. from inside `AsyncApp::update`).
+fn add_pin_to_canvas(canvas: &Arc<Mutex<Option<WindowHandle<PinCanvas>>>>, img: image::RgbaImage, cx: &mut App) -> String {
+    let screen = primary_screen_bounds(cx);
+
+    // Probe whether the existing canvas window is still alive. The probe
+    // closure does not move `img`, so it can be reused below on either path.
+    let existing = canvas.lock().unwrap().clone();
+    let alive = matches!(&existing, Some(handle) if handle.update(cx, |_: &mut PinCanvas, _, _| ()).is_ok());
+
+    let handle = if alive {
+        existing.unwrap()
+    } else {
+        // Either nothing was created yet, or the window was closed; recreate it.
+        let _ = canvas.lock().unwrap().take();
+        // NOTE: we deliberately call `App::open_window` (the inherent method)
+        // instead of the `gpui_kit::open_window` free function. The latter wraps
+        // the view in `gpui_base::Root` and returns `(AnyWindowHandle, Entity<V>)`,
+        // which would make the stored `WindowHandle<PinCanvas>` downcast fail at
+        // runtime ("the type of the window's root view has changed"). Using the
+        // raw API keeps `PinCanvas` itself as the window's root view, which is
+        // exactly what `WindowHandle<PinCanvas>::update` needs.
+        let options = build_window_options(cx);
+        match cx.open_window(options, |_, cx| cx.new(|_| PinCanvas::new())) {
+            Ok(handle) => {
+                *canvas.lock().unwrap() = Some(handle);
+                handle
+            }
+            Err(e) => return format!("err:{e}"),
+        }
+    };
+
+    match handle.update(cx, |view: &mut PinCanvas, _window, cx| {
+        view.add_pin(img, screen);
+        cx.notify();
+    }) {
+        Ok(_) => "ok".to_string(),
+        Err(e) => format!("err:{e}"),
+    }
 }
 
 /// Bind the Unix socket and spawn a thread that forwards each received command
@@ -158,12 +203,12 @@ pub fn primary_screen_bounds(cx: &App) -> Bounds<Pixels> {
         })
 }
 
-/// Build the [`WindowOptions`] for a new pin window: transparent, borderless,
+/// Build the [`WindowOptions`] for the canvas: transparent, borderless,
 /// screen-sized, floating, with `app-id = "pinapp"`.
 ///
-/// Note: gpui-kit 0.7 exposes no runtime window-move/resize API, so each pin is
-/// a full-screen transparent window and the image is positioned inside it (see
-/// [`crate::pin_view`]).
+/// Note: gpui-kit 0.7 exposes no runtime window-move/resize API, so the canvas
+/// is a full-screen transparent window and each image is positioned inside it
+/// (see [`crate::canvas`]).
 fn build_window_options(cx: &App) -> WindowOptions {
     let screen = primary_screen_bounds(cx);
     let bounds = Bounds {
