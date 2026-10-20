@@ -21,7 +21,7 @@
 use anyhow::Result;
 use async_channel::unbounded;
 use gpui_kit::{
-    App, AsyncApp, Bounds, Point, Pixels, Size, TitlebarOptions, WindowBackgroundAppearance,
+    App, AppContext, AsyncApp, Bounds, Point, Pixels, Size, TitlebarOptions, WindowBackgroundAppearance,
     WindowBounds, WindowHandle, WindowKind, WindowOptions, px,
 };
 use std::io::{Read, Write};
@@ -51,7 +51,7 @@ pub fn run_daemon() -> Result<()> {
         let canvas = canvas.clone();
         // Background task: process IPC commands on the main thread so we can
         // create windows and touch entities safely.
-        cx.spawn(|mut async_cx: &mut AsyncApp| async move {
+        cx.spawn(async move |async_cx: &mut AsyncApp| {
             while let Ok((cmd, reply)) = rx.recv().await {
                 match cmd.as_str() {
                     "pin" => match clipboard::read_clipboard_image() {
