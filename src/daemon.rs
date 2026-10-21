@@ -20,13 +20,13 @@
 
 use anyhow::Result;
 use async_channel::unbounded;
-use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::{
-    App, AppContext, AsyncApp, Bounds, Point, Pixels, Size, TitlebarOptions, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, px,
+    App, AppContext, AsyncApp, Bounds, PlatformDisplay, Point, Pixels, QuitMode, Size, TitlebarOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, px,
 };
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +48,15 @@ pub fn run_daemon() -> Result<()> {
 
     let _ = gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+
+        // The daemon must outlive the canvas window. With the default
+        // `QuitMode::Default`, GPUI quits as soon as the last window goes away
+        // (`cfg!(not(target_os = "macos"))` is true on Linux), and that happens
+        // whenever the compositor dismisses our surface or the canvas is
+        // closed. The daemon would then be gone and every following `pin` would
+        // fail with ConnectionRefused. `QuitMode::Explicit` means the process
+        // only ends via our own `cx.quit()`, i.e. the `quit` IPC command.
+        cx.set_quit_mode(QuitMode::Explicit);
 
         let canvas = canvas.clone();
         // Background task: process IPC commands on the main thread so we can
@@ -190,9 +199,33 @@ fn start_socket_listener(
     Ok(())
 }
 
-/// Compute the bounds of the primary display (fallback 1920x1080).
+/// Pick the display the pin canvas should cover.
+///
+/// `App::primary_display()` cannot be used here: on Wayland gpui-pre-linux
+/// implements it as an unconditional `None`, so it always falls back. We
+/// enumerate `App::displays()` instead and prefer the output whose bounds
+/// contain the global origin, which is the usual primary output. When no output
+/// starts at the origin (some multi-monitor layouts) we just take the first one.
+///
+/// Returns `None` only when the platform reports no displays at all.
+fn target_display(cx: &App) -> Option<Rc<dyn PlatformDisplay>> {
+    let displays = cx.displays();
+    let index = displays
+        .iter()
+        .position(|d| d.bounds().contains(&Point {
+            x: px(0.0),
+            y: px(0.0),
+        }))
+        .unwrap_or(0);
+    displays.into_iter().nth(index)
+}
+
+/// Compute the bounds of the display the canvas covers (fallback 1920x1080).
+///
+/// Uses the real display geometry when the platform reports any, so a pinned
+/// image is centred on the actual viewport instead of a hardcoded size.
 pub fn primary_screen_bounds(cx: &App) -> Bounds<Pixels> {
-    cx.primary_display()
+    target_display(cx)
         .map(|d| d.bounds())
         .unwrap_or_else(|| Bounds {
             origin: Point { x: px(0.0), y: px(0.0) },
@@ -204,27 +237,37 @@ pub fn primary_screen_bounds(cx: &App) -> Bounds<Pixels> {
 }
 
 /// Build the [`WindowOptions`] for the canvas: transparent, borderless,
-/// screen-sized Wayland layer-shell overlay, with `app-id = "pinapp"`.
+/// screen-sized, floating, with `app-id = "pinapp"`.
 ///
 /// Note: gpui-kit 0.7 exposes no runtime window-move/resize API, so the canvas
 /// is a full-screen transparent window and each image is positioned inside it
 /// (see [`crate::canvas`]).
 ///
-/// ## Why layer-shell and not [`WindowKind::Floating`]
+/// ## Why this is [`WindowKind::Floating`] and not [`WindowKind::LayerShell`]
 ///
-/// `Floating` is still an ordinary toplevel window: the compositor (niri) gives
-/// it window semantics, so it shows up in the overview/workspace and is tiled or
-/// moved like any other window. `LayerShell` creates a `zwlr_layer_surface_v1`
-/// instead, i.e. a desktop overlay that is drawn on top of the whole output and
-/// is not managed as a window.
+/// `LayerShell` was tried first (commit 70d7431) and had to be reverted: niri
+/// does not advertise a single `wl_output` global, only `zxdg_output_manager_v1`
+/// and `zwlr_output_manager_v1`. gpui-pre-linux discovers displays exclusively
+/// by binding `wl_output` globals, so `App::displays()` returns an empty list,
+/// there is no `DisplayId` to pass, and `get_layer_surface` is called with a
+/// NULL `wl_output`. niri answers by sending `closed()` immediately, before any
+/// `configure`, so the canvas never appears at all. Passing an output is not
+/// possible from here, so the layer-shell route is blocked on the platform
+/// layer, not on this file.
 ///
-/// All four anchors are set so the surface is stretched to cover the entire
-/// output; [`Layer::Overlay`] keeps it above every normal window. Surface-local
-/// coordinates then equal output coordinates, which is what
-/// [`PinCanvas::add_pin`](crate::canvas::PinCanvas::add_pin) assumes when it
-/// centers a pin with `primary_screen_bounds`.
+/// `Floating` is what actually renders under niri. It is an ordinary toplevel
+/// window, so the compositor gives it window semantics; making it cover the
+/// whole viewport is a separate problem on top of this.
 fn build_window_options(cx: &App) -> WindowOptions {
-    let screen = primary_screen_bounds(cx);
+    // Resolve the real output. Passing `display_id` matters for layer-shell:
+    // with `None` GPUI hands a NULL `wl_output` to `get_layer_surface`, and
+    // niri answers by closing the surface immediately (no `configure` is ever
+    // sent), so the canvas never appears.
+    let display = target_display(cx);
+    let screen = display
+        .as_ref()
+        .map(|d| d.bounds())
+        .unwrap_or_else(|| primary_screen_bounds(cx));
     let bounds = Bounds {
         origin: Point { x: px(0.0), y: px(0.0) },
         size: screen.size,
@@ -239,21 +282,7 @@ fn build_window_options(cx: &App) -> WindowOptions {
         }),
         focus: true,
         show: true,
-        kind: WindowKind::LayerShell(LayerShellOptions {
-            namespace: "pinapp".to_string(),
-            // Always on top of every regular window.
-            layer: Layer::Overlay,
-            // Anchor to all four edges so the surface spans the full output.
-            anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
-            exclusive_zone: None,
-            exclusive_edge: None,
-            margin: None,
-            // `OnDemand` lets the compositor hand us keyboard focus when a pin
-            // is clicked, which is what the Esc/R/F/V/T shortcuts need. `None`
-            // would never deliver keys; `Exclusive` would steal the keyboard
-            // from every other window for as long as the overlay exists.
-            keyboard_interactivity: KeyboardInteractivity::OnDemand,
-        }),
+        kind: WindowKind::Floating,
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
@@ -264,7 +293,8 @@ fn build_window_options(cx: &App) -> WindowOptions {
         // `None` => no (server/client) decorations → borderless on Linux.
         window_decorations: None,
         window_min_size: None,
-        display_id: None,
+        // Real output id so `get_layer_surface` receives a non-NULL wl_output.
+        display_id: display.as_ref().map(|d| d.id()),
         icon: None,
         tabbing_identifier: None,
     }
