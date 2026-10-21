@@ -20,6 +20,7 @@
 
 use anyhow::Result;
 use async_channel::unbounded;
+use gpui_kit::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui_kit::{
     App, AppContext, AsyncApp, Bounds, Point, Pixels, Size, TitlebarOptions, WindowBackgroundAppearance,
     WindowBounds, WindowHandle, WindowKind, WindowOptions, px,
@@ -203,11 +204,25 @@ pub fn primary_screen_bounds(cx: &App) -> Bounds<Pixels> {
 }
 
 /// Build the [`WindowOptions`] for the canvas: transparent, borderless,
-/// screen-sized, floating, with `app-id = "pinapp"`.
+/// screen-sized Wayland layer-shell overlay, with `app-id = "pinapp"`.
 ///
 /// Note: gpui-kit 0.7 exposes no runtime window-move/resize API, so the canvas
 /// is a full-screen transparent window and each image is positioned inside it
 /// (see [`crate::canvas`]).
+///
+/// ## Why layer-shell and not [`WindowKind::Floating`]
+///
+/// `Floating` is still an ordinary toplevel window: the compositor (niri) gives
+/// it window semantics, so it shows up in the overview/workspace and is tiled or
+/// moved like any other window. `LayerShell` creates a `zwlr_layer_surface_v1`
+/// instead, i.e. a desktop overlay that is drawn on top of the whole output and
+/// is not managed as a window.
+///
+/// All four anchors are set so the surface is stretched to cover the entire
+/// output; [`Layer::Overlay`] keeps it above every normal window. Surface-local
+/// coordinates then equal output coordinates, which is what
+/// [`PinCanvas::add_pin`](crate::canvas::PinCanvas::add_pin) assumes when it
+/// centers a pin with `primary_screen_bounds`.
 fn build_window_options(cx: &App) -> WindowOptions {
     let screen = primary_screen_bounds(cx);
     let bounds = Bounds {
@@ -224,7 +239,21 @@ fn build_window_options(cx: &App) -> WindowOptions {
         }),
         focus: true,
         show: true,
-        kind: WindowKind::Floating,
+        kind: WindowKind::LayerShell(LayerShellOptions {
+            namespace: "pinapp".to_string(),
+            // Always on top of every regular window.
+            layer: Layer::Overlay,
+            // Anchor to all four edges so the surface spans the full output.
+            anchor: Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+            exclusive_zone: None,
+            exclusive_edge: None,
+            margin: None,
+            // `OnDemand` lets the compositor hand us keyboard focus when a pin
+            // is clicked, which is what the Esc/R/F/V/T shortcuts need. `None`
+            // would never deliver keys; `Exclusive` would steal the keyboard
+            // from every other window for as long as the overlay exists.
+            keyboard_interactivity: KeyboardInteractivity::OnDemand,
+        }),
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
