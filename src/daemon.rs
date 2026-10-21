@@ -256,8 +256,9 @@ pub fn primary_screen_bounds(cx: &App) -> Bounds<Pixels> {
 /// layer, not on this file.
 ///
 /// `Floating` is what actually renders under niri. It is an ordinary toplevel
-/// window, so the compositor gives it window semantics; making it cover the
-/// whole viewport is a separate problem on top of this.
+/// window, so the compositor gives it window semantics; to make it span the
+/// whole viewport we ask for the fullscreen state rather than for a size, see
+/// the note on `window_bounds` below.
 fn build_window_options(cx: &App) -> WindowOptions {
     // Resolve the real output. Passing `display_id` matters for layer-shell:
     // with `None` GPUI hands a NULL `wl_output` to `get_layer_surface`, and
@@ -274,7 +275,16 @@ fn build_window_options(cx: &App) -> WindowOptions {
     };
 
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        // Ask the compositor for the fullscreen state instead of handing it a
+        // size. niri advertises no `wl_output` global, so gpui-pre-linux finds
+        // no displays at all and `primary_screen_bounds` can only ever return
+        // its hardcoded fallback; a client-supplied size therefore cannot cover
+        // the real viewport (niri tiled the canvas to 1920x1390 on a 2560-wide
+        // output). `Fullscreen` makes GPUI request the fullscreen state via
+        // `toggle_fullscreen`, so the compositor decides the covering size and
+        // we do not need to know the real resolution. `bounds` is only the
+        // restore size used after leaving fullscreen.
+        window_bounds: Some(WindowBounds::Fullscreen(bounds)),
         titlebar: Some(TitlebarOptions {
             title: Some("pinapp".into()),
             appears_transparent: true,
